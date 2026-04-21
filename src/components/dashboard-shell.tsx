@@ -374,6 +374,7 @@ export default function DashboardShell({
       return;
     }
 
+    const requestMessages = pendingRequestMessages;
     const primaryProvider = getPrimaryProvider();
     const fallbackProvider = getFallbackProvider();
     const controller = new AbortController();
@@ -433,7 +434,7 @@ export default function DashboardShell({
               "Content-Type": "application/json",
             },
             body: JSON.stringify({
-              contents: buildGoogleContents(pendingRequestMessages),
+              contents: buildGoogleContents(requestMessages),
             }),
             signal: controller.signal,
           });
@@ -518,7 +519,7 @@ export default function DashboardShell({
           body: JSON.stringify({
             model: provider.model,
             stream: true,
-            messages: pendingRequestMessages,
+            messages: requestMessages,
           }),
           signal: controller.signal,
         });
@@ -698,10 +699,65 @@ export default function DashboardShell({
     }, APPROVAL_EXIT_DELAY_MS);
   }
 
+  function appendSystemMessage(content: string): void {
+    setChatMessages((currentMessages) => [
+      ...currentMessages,
+      {
+        id: `system-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+        role: "assistant",
+        meta: "SYSTEM | CHANNEL: CONTROL_PLANE | JUST_NOW",
+        content,
+      },
+    ]);
+  }
+
+  function handleStopStream(): void {
+    streamAbortControllerRef.current?.abort();
+    setIsStreaming(false);
+    setIsThinking(false);
+    setStreamingMessageId(null);
+    setActivePrompt(null);
+    setPendingRequestMessages(null);
+    appendSystemMessage("[SYSTEM: STREAM_TERMINATED_BY_USER]");
+  }
+
   function handleSubmit(): void {
     const nextPrompt = draftPrompt.trim();
 
     if (!nextPrompt || isStreaming) {
+      return;
+    }
+
+    const approveCommandMatch = nextPrompt.match(/^\/approve\s+(.+)$/i);
+
+    if (approveCommandMatch) {
+      const remainingText = approveCommandMatch[1].trim();
+
+      if (!remainingText) {
+        return;
+      }
+
+      const newItem: ApprovalItem = {
+        id: `REQ-${Math.floor(Math.random() * 10000)}`,
+        action: remainingText.toUpperCase(),
+        requestedAt: new Date().toISOString(),
+        meta: "SRC: CHAT_TERMINAL | MANUAL_ENTRY",
+      };
+
+      setApprovals((currentItems) => [newItem, ...currentItems]);
+      setChatMessages((currentMessages) => [
+        ...currentMessages,
+        {
+          id: `user-${Date.now()}`,
+          role: "user",
+          meta: "USER | CHANNEL: LIVE_QUERY | JUST_NOW",
+          content: nextPrompt,
+        },
+      ]);
+      appendSystemMessage(
+        "[SYSTEM: Authorization request successfully routed to Pending Approvals.]",
+      );
+      setDraftPrompt("");
       return;
     }
 
@@ -914,6 +970,15 @@ export default function DashboardShell({
                   >
                     SEND
                   </button>
+                  {isStreaming ? (
+                    <button
+                      type="button"
+                      onClick={handleStopStream}
+                      className="rounded-sm border border-red-500/30 bg-red-500/10 px-3 py-2.5 font-mono text-xs tracking-[0.16em] text-red-500 transition-colors hover:bg-red-500/16 focus:ring-2 focus:ring-red-500 focus:outline-none"
+                    >
+                      STOP
+                    </button>
+                  ) : null}
                 </div>
               </form>
             </div>
