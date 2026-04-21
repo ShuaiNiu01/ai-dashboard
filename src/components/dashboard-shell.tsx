@@ -16,8 +16,11 @@ type ThemeMode = "dark" | "light";
 type ApprovalDecision = "approve" | "reject";
 type ChatRole = "assistant" | "user";
 type StreamProviderKind = "google" | "openai";
+type MobileTabId = "chat" | "approvals";
 const THEME_EVENT = "dashboard-theme-change";
 const APPROVAL_EXIT_DELAY_MS = 140;
+const MOBILE_TAB_ORDER: MobileTabId[] = ["chat", "approvals"];
+const MOBILE_SWIPE_THRESHOLD_PX = 72;
 const GOOGLE_API_BASE =
   process.env.NEXT_PUBLIC_GOOGLE_API_BASE ??
   "https://generativelanguage.googleapis.com/v1beta";
@@ -418,8 +421,11 @@ export default function DashboardShell({
   const [isApprovalHintActive, setIsApprovalHintActive] = useState(false);
   const [approvalHintSuffix, setApprovalHintSuffix] = useState("");
   const [hasHydratedApprovals, setHasHydratedApprovals] = useState(false);
+  const [activeMobileTab, setActiveMobileTab] = useState<MobileTabId>("chat");
+  const [mobileTabDirection, setMobileTabDirection] = useState<1 | -1>(1);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const mobileTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   const streamAbortControllerRef = useRef<AbortController | null>(null);
   const pendingCount = approvalItems.length;
 
@@ -895,15 +901,438 @@ export default function DashboardShell({
     setActivePrompt(nextPrompt);
   }
 
-  return (
-    <main className="min-h-screen bg-[var(--app-bg)] text-[var(--text-primary)] transition-colors duration-200 lg:h-[100dvh] lg:overflow-hidden">
-      <div className="mx-auto flex min-h-screen w-full max-w-[1600px] flex-col px-3 py-3 sm:px-4 lg:h-full lg:min-h-0">
-        <header className="mb-3 shrink-0 flex flex-col gap-2 rounded-md border border-[var(--panel-border)] bg-[var(--panel-bg)] px-3 py-2 shadow-[0_10px_30px_rgba(0,0,0,0.12)] sm:flex-row sm:items-center sm:justify-between">
+  function switchMobileTab(nextTab: MobileTabId): void {
+    if (nextTab === activeMobileTab) {
+      return;
+    }
+
+    const currentIndex = MOBILE_TAB_ORDER.indexOf(activeMobileTab);
+    const nextIndex = MOBILE_TAB_ORDER.indexOf(nextTab);
+    setMobileTabDirection(nextIndex > currentIndex ? 1 : -1);
+    setActiveMobileTab(nextTab);
+  }
+
+  function shiftMobileTab(direction: 1 | -1): void {
+    const currentIndex = MOBILE_TAB_ORDER.indexOf(activeMobileTab);
+    const nextIndex = currentIndex + direction;
+
+    if (nextIndex < 0 || nextIndex >= MOBILE_TAB_ORDER.length) {
+      return;
+    }
+
+    setMobileTabDirection(direction);
+    setActiveMobileTab(MOBILE_TAB_ORDER[nextIndex]);
+  }
+
+  function handleMobileTouchStart(
+    event: React.TouchEvent<HTMLDivElement>,
+  ): void {
+    const touch = event.changedTouches[0];
+
+    mobileTouchStartRef.current = { x: touch.clientX, y: touch.clientY };
+  }
+
+  function handleMobileTouchEnd(
+    event: React.TouchEvent<HTMLDivElement>,
+  ): void {
+    const touchStart = mobileTouchStartRef.current;
+    mobileTouchStartRef.current = null;
+
+    if (!touchStart) {
+      return;
+    }
+
+    const touch = event.changedTouches[0];
+    const deltaX = touch.clientX - touchStart.x;
+    const deltaY = touch.clientY - touchStart.y;
+
+    if (
+      Math.abs(deltaX) < MOBILE_SWIPE_THRESHOLD_PX ||
+      Math.abs(deltaX) <= Math.abs(deltaY) * 1.15
+    ) {
+      return;
+    }
+
+    shiftMobileTab(deltaX < 0 ? 1 : -1);
+  }
+
+  const mobileTabTriggerClassName =
+    "flex-1 rounded-sm border px-3 py-2 font-mono text-[11px] tracking-[0.16em] uppercase transition-colors focus:ring-2 focus:ring-emerald-500 focus:outline-none";
+
+  function renderChatPanel(
+    titleId: string,
+    className: string,
+    panelId?: string,
+    tabId?: string,
+  ): ReactElement {
+    return (
+      <section
+        id={panelId}
+        role={panelId ? "tabpanel" : undefined}
+        aria-labelledby={tabId ?? titleId}
+        aria-describedby={tabId ? titleId : undefined}
+        className={className}
+      >
+        <div className="flex items-start justify-between gap-3 rounded-t-md border-b border-[var(--panel-border)] bg-[var(--surface-bg)] px-3 py-2 sm:items-center">
+          <div>
+            <p className="font-mono text-xs tracking-wide text-[var(--accent-positive)]">
+              MODULE: CONVERSATION_TERMINAL
+            </p>
+            <h1
+              id={titleId}
+              className="mt-1 text-sm font-semibold uppercase tracking-[0.16em] text-[var(--text-primary)] sm:tracking-[0.18em]"
+            >
+              AI Assistant Chat
+            </h1>
+          </div>
+          <div className="max-w-[7rem] text-right font-mono text-[10px] leading-4 text-[var(--text-muted)] sm:max-w-none sm:text-xs">
+            SESSION: LIVE_FEED
+          </div>
+        </div>
+
+        <div className="flex min-h-0 flex-1 flex-col gap-3 p-3">
+          <div className="min-h-0 overflow-hidden rounded-sm border border-[var(--panel-border)] bg-[var(--surface-bg-elevated)]">
+            <div className="flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain p-3">
+              <div className="space-y-3">
+                {chatMessages.map((message) => {
+                  const isAssistant = message.role === "assistant";
+                  const isActiveStream =
+                    isAssistant &&
+                    isStreaming &&
+                    message.id === streamingMessageId;
+
+                  return (
+                    <div
+                      key={message.id}
+                      className={`border-l-2 pl-3 ${
+                        isAssistant
+                          ? "border-[var(--accent-positive-soft)]"
+                          : "border-[var(--line-muted)]"
+                      }`}
+                    >
+                      <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-[var(--text-muted)]">
+                        {message.meta
+                          .split(" | ")
+                          .map((part, index, parts) => (
+                            <span
+                              key={`${message.id}-${part}`}
+                              className={
+                                isAssistant && index === 0
+                                  ? "text-[var(--accent-positive)]"
+                                  : undefined
+                              }
+                            >
+                              {part}
+                              {index < parts.length - 1 ? (
+                                <span className="px-3 text-[var(--line-muted)]">
+                                  |
+                                </span>
+                              ) : null}
+                            </span>
+                          ))}
+                      </div>
+
+                      {isActiveStream && isThinking ? (
+                        <div
+                          aria-live="polite"
+                          aria-label="Assistant is thinking"
+                          className="flex items-center gap-2 py-1 text-[var(--text-muted)]"
+                        >
+                          <span className="font-mono text-xs tracking-[0.14em] text-[var(--accent-positive)]">
+                            SYSTEM: AWAITING_STREAM...
+                          </span>
+                          <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--accent-positive)] [animation-delay:-0.2s]" />
+                          <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--accent-positive)] [animation-delay:-0.1s]" />
+                          <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--accent-positive)]" />
+                        </div>
+                      ) : (
+                        <p className="max-w-4xl whitespace-pre-wrap text-sm leading-6 text-[var(--text-secondary)]">
+                          {message.content}
+                          {isActiveStream ? (
+                            <motion.span
+                              aria-hidden="true"
+                              animate={{ opacity: [0.2, 1, 0.2] }}
+                              transition={{
+                                duration: 0.9,
+                                ease: "easeInOut",
+                                repeat: Number.POSITIVE_INFINITY,
+                              }}
+                              className="ml-0.5 inline-block text-[var(--accent-positive)]"
+                            >
+                              ▍
+                            </motion.span>
+                          ) : null}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+                <div ref={bottomRef} />
+              </div>
+            </div>
+          </div>
+
+          <form
+            suppressHydrationWarning
+            className="rounded-sm border border-[var(--panel-border)] bg-[var(--surface-bg-elevated)]"
+            onSubmit={(event) => {
+              event.preventDefault();
+              handleSubmit();
+            }}
+          >
+            <div className="flex items-center justify-between gap-3 border-b border-[var(--panel-border)] px-3 py-2">
+              <p className="font-mono text-[10px] leading-4 text-[var(--text-muted)] sm:text-xs">
+                INPUT_BUFFER // COMMAND_LINE ACTIVE
+              </p>
+              <p className="font-mono text-[10px] leading-4 text-[var(--line-muted)] sm:text-xs">
+                {isStreaming ? "STREAM_LOCK ENGAGED" : "READY_FOR_QUERY"}
+              </p>
+            </div>
+            <div className="flex flex-col gap-2 px-3 py-3 sm:flex-row sm:items-start">
+              <div className="flex items-start gap-2 sm:flex-1">
+                <label className="min-w-0 flex-1">
+                <span className="sr-only">Message the AI assistant</span>
+                <input
+                  suppressHydrationWarning
+                  ref={inputRef}
+                  type="text"
+                  value={draftPrompt}
+                  disabled={isStreaming}
+                  onChange={(event) =>
+                    setDraftPromptWithHint(event.target.value)
+                  }
+                  onKeyDown={(event) => {
+                    if (event.key === "Tab" && isApprovalHintActive) {
+                      event.preventDefault();
+                      setDraftPromptWithHint(APPROVE_COMMAND);
+                      requestAnimationFrame(() => {
+                        inputRef.current?.focus();
+                        inputRef.current?.setSelectionRange(
+                          APPROVE_COMMAND.length,
+                          APPROVE_COMMAND.length,
+                        );
+                      });
+                      return;
+                    }
+
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      handleSubmit();
+                    }
+                  }}
+                  placeholder="Ask AI a question, or type /approve to authorize..."
+                  className="w-full rounded-sm border border-[var(--panel-border)] bg-[var(--surface-bg)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--panel-border-strong)] focus:ring-1 focus:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
+                />
+                <div className="mt-2 flex min-h-4 items-center justify-between gap-3">
+                  <div className="min-w-0 font-mono text-[10px] text-zinc-500 sm:text-xs">
+                    {isApprovalHintActive ? (
+                      <p className="truncate">
+                        Tab to autocomplete: {draftPrompt}
+                        <span className="text-zinc-500">{approvalHintSuffix}</span>
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+                </label>
+                <button
+                  type="submit"
+                  disabled={isStreaming || draftPrompt.trim().length === 0}
+                  className="shrink-0 rounded-sm border border-emerald-500/35 bg-emerald-500/10 px-3 py-2.5 font-mono text-[11px] tracking-[0.16em] text-emerald-400 transition-colors hover:bg-emerald-500/16 focus:ring-2 focus:ring-emerald-500 focus:outline-none disabled:cursor-not-allowed disabled:border-[var(--panel-border)] disabled:bg-[var(--surface-bg)] disabled:text-[var(--text-muted)] disabled:hover:bg-[var(--surface-bg)] sm:px-4 sm:text-xs"
+                >
+                  SEND
+                </button>
+              </div>
+              {isStreaming ? (
+                <button
+                  type="button"
+                  onClick={handleStopStream}
+                  className="rounded-sm border border-red-500/30 bg-red-500/10 px-3 py-2.5 font-mono text-xs tracking-[0.16em] text-red-500 transition-colors hover:bg-red-500/16 focus:ring-2 focus:ring-red-500 focus:outline-none"
+                >
+                  STOP
+                </button>
+              ) : null}
+            </div>
+          </form>
+        </div>
+      </section>
+    );
+  }
+
+  function renderApprovalsPanel(
+    titleId: string,
+    className: string,
+    panelId?: string,
+    tabId?: string,
+  ): ReactElement {
+    return (
+      <section
+        id={panelId}
+        role={panelId ? "tabpanel" : undefined}
+        aria-labelledby={tabId ?? titleId}
+        aria-describedby={tabId ? titleId : undefined}
+        className={className}
+      >
+        <div className="flex items-center justify-between gap-3 rounded-t-md border-b border-[var(--panel-border)] bg-[var(--surface-bg)] px-3 py-2">
+          <div className="flex items-center gap-3">
+            <div>
+              <p className="font-mono text-xs tracking-wide text-[var(--accent-positive)]">
+                MODULE: HUMAN_APPROVAL_QUEUE
+              </p>
+              <h2
+                id={titleId}
+                className="mt-1 text-sm font-semibold uppercase tracking-[0.18em] text-[var(--text-primary)]"
+              >
+                Pending Approvals
+              </h2>
+            </div>
+            <span className="rounded-sm border border-[var(--panel-border)] bg-[var(--surface-bg-elevated)] px-2 py-0.5 font-mono text-xs text-[var(--accent-positive)]">
+              {(hasHydratedApprovals ? pendingCount : approvals.length)
+                .toString()
+                .padStart(2, "0")}
+            </span>
+          </div>
           <div className="font-mono text-xs text-[var(--text-muted)]">
+            FEED: PRIORITY_SORT
+          </div>
+        </div>
+
+        <div className="grid min-h-0 flex-1 gap-3 p-3">
+          <div className="min-h-0 overflow-hidden rounded-sm border border-[var(--panel-border)] bg-[var(--surface-bg-elevated)]">
+            <div className="flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain p-3">
+              {!hasHydratedApprovals ? (
+                <div className="flex h-full items-center justify-center rounded-sm border border-dashed border-[var(--panel-border-strong)] bg-[var(--surface-bg-elevated)] px-4 py-8 text-center">
+                  <div>
+                    <p className="font-mono text-xs tracking-[0.18em] text-[var(--accent-positive)]">
+                      SYNCING_QUEUE
+                    </p>
+                    <p className="mt-3 text-sm text-[var(--text-secondary)]">
+                      Restoring your saved approval state...
+                    </p>
+                  </div>
+                </div>
+              ) : approvalItems.length === 0 ? (
+                <div className="flex h-full items-center justify-center rounded-sm border border-dashed border-[var(--panel-border-strong)] bg-[var(--surface-bg-elevated)] px-4 py-8 text-center">
+                  <div>
+                    <p className="font-mono text-xs tracking-[0.18em] text-[var(--accent-positive)]">
+                      QUEUE_EMPTY
+                    </p>
+                    <p className="mt-3 text-sm text-[var(--text-secondary)]">
+                      All pending authorizations cleared.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3 pr-1">
+                  <AnimatePresence initial={false}>
+                    {approvalItems.map((approval) => {
+                      const amount = extractAmount(approval.action);
+                      const decision = approvalStates[approval.id];
+                      const isProcessing = Boolean(
+                        processingApprovals[approval.id],
+                      );
+                      const cardBorderClass =
+                        decision === "approve"
+                          ? "border-emerald-500/45 shadow-[0_0_0_1px_rgba(16,185,129,0.22)]"
+                          : decision === "reject"
+                            ? "border-rose-500/40 shadow-[0_0_0_1px_rgba(244,63,94,0.18)]"
+                            : "border-[var(--panel-border)] hover:border-[var(--panel-border-strong)]";
+
+                      return (
+                        <motion.article
+                          key={approval.id}
+                          layout
+                          initial={{ opacity: 0, y: 14, scale: 0.98 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: -10, scale: 0.97 }}
+                          transition={{ duration: 0.18, ease: "easeOut" }}
+                          className={`rounded-sm border bg-[var(--surface-bg-elevated)] p-3 transition-colors ${cardBorderClass}`}
+                        >
+                          <div className="mb-3 flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="font-mono text-xs text-[var(--text-muted)]">
+                                {approval.id}
+                              </p>
+                              <p className="mt-2 text-sm leading-6 text-[var(--text-primary)]">
+                                {approval.action}
+                              </p>
+                            </div>
+                            <span className="border border-emerald-500/30 px-2 py-1 font-mono text-xs text-emerald-400">
+                              {isProcessing ? "PROCESSING" : "PENDING"}
+                            </span>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2 font-mono text-xs text-[var(--text-muted)]">
+                            <span>
+                              {formatTerminalTimestamp(approval.requestedAt)}
+                            </span>
+                            <span className="text-[var(--line-muted)]">|</span>
+                            <span>{approval.meta}</span>
+                            {amount ? (
+                              <>
+                                <span className="text-[var(--line-muted)]">
+                                  |
+                                </span>
+                                <span>NOTIONAL: {amount}</span>
+                              </>
+                            ) : null}
+                          </div>
+
+                          <div className="mt-4 flex gap-2">
+                            <button
+                              type="button"
+                              aria-label={`Approve ${approval.id}`}
+                              aria-pressed={decision === "approve"}
+                              disabled={isProcessing}
+                              onClick={() =>
+                                handleDecision(approval.id, "approve")
+                              }
+                              className={`rounded-sm border px-3 py-1.5 font-mono text-xs transition-colors focus:ring-2 focus:ring-emerald-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
+                                decision === "approve"
+                                  ? "border-emerald-500/50 bg-emerald-500/14 text-emerald-300"
+                                  : "border-emerald-500/30 bg-emerald-500/6 text-emerald-400 hover:bg-emerald-500/12"
+                              }`}
+                            >
+                              APPROVE
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`Reject ${approval.id}`}
+                              aria-pressed={decision === "reject"}
+                              disabled={isProcessing}
+                              onClick={() =>
+                                handleDecision(approval.id, "reject")
+                              }
+                              className={`rounded-sm border px-3 py-1.5 font-mono text-xs transition-colors focus:ring-2 focus:ring-rose-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
+                                decision === "reject"
+                                  ? "border-rose-500/45 bg-rose-500/14 text-rose-300"
+                                  : "border-rose-500/25 bg-rose-500/5 text-rose-400 hover:bg-rose-500/10"
+                              }`}
+                            >
+                              REJECT
+                            </button>
+                          </div>
+                        </motion.article>
+                      );
+                    })}
+                  </AnimatePresence>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <main className="h-[100dvh] overflow-hidden bg-[var(--app-bg)] text-[var(--text-primary)] transition-colors duration-200">
+      <div className="mx-auto flex h-full w-full max-w-[1600px] flex-col px-3 py-3 sm:px-4">
+        <header className="mb-2 shrink-0 flex flex-col gap-2 rounded-md border border-[var(--panel-border)] bg-[var(--panel-bg)] px-3 py-2 shadow-[0_10px_30px_rgba(0,0,0,0.12)] sm:mb-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="hidden font-mono text-xs text-[var(--text-muted)] sm:block">
             SYSTEM: AI-CORE // ENV: PROD // REGION: USE1 // LATENCY: 18MS
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 font-mono text-xs text-[var(--text-muted)]">
+          <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] text-[var(--text-muted)] sm:text-xs">
             <span className="rounded-sm border border-[var(--panel-border)] bg-[var(--surface-bg)] px-2 py-1 text-[var(--accent-positive)]">
               STATUS: ONLINE
             </span>
@@ -922,339 +1351,111 @@ export default function DashboardShell({
           </div>
         </header>
 
-        <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.85fr)]">
-          <section
-            aria-labelledby="chat-panel-title"
-            className="flex min-h-[28rem] flex-col rounded-md border border-[var(--panel-border)] bg-[var(--panel-bg)] shadow-[0_14px_36px_rgba(0,0,0,0.10)] lg:h-full lg:min-h-0"
-          >
-            <div className="flex items-center justify-between gap-3 rounded-t-md border-b border-[var(--panel-border)] bg-[var(--surface-bg)] px-3 py-2">
-              <div>
-                <p className="font-mono text-xs tracking-wide text-[var(--accent-positive)]">
-                  MODULE: CONVERSATION_TERMINAL
-                </p>
-                <h1
-                  id="chat-panel-title"
-                  className="mt-1 text-sm font-semibold uppercase tracking-[0.18em] text-[var(--text-primary)]"
-                >
-                  AI Assistant Chat
-                </h1>
-              </div>
-              <div className="font-mono text-xs text-[var(--text-muted)]">
-                SESSION: LIVE_FEED
-              </div>
-            </div>
-
-            <div className="grid flex-1 gap-3 p-3 xl:grid-rows-[1fr_auto]">
-              <div className="overflow-hidden rounded-sm border border-[var(--panel-border)] bg-[var(--surface-bg-elevated)]">
-                <div className="flex h-full max-h-[34rem] flex-col overflow-y-auto p-3">
-                  <div className="space-y-3">
-                    {chatMessages.map((message) => {
-                      const isAssistant = message.role === "assistant";
-                      const isActiveStream =
-                        isAssistant &&
-                        isStreaming &&
-                        message.id === streamingMessageId;
-
-                      return (
-                        <div
-                          key={message.id}
-                          className={`border-l-2 pl-3 ${
-                            isAssistant
-                              ? "border-[var(--accent-positive-soft)]"
-                              : "border-[var(--line-muted)]"
-                          }`}
-                        >
-                          <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-[var(--text-muted)]">
-                            {message.meta
-                              .split(" | ")
-                              .map((part, index, parts) => (
-                                <span
-                                  key={`${message.id}-${part}`}
-                                  className={
-                                    isAssistant && index === 0
-                                      ? "text-[var(--accent-positive)]"
-                                      : undefined
-                                  }
-                                >
-                                  {part}
-                                  {index < parts.length - 1 ? (
-                                    <span className="px-3 text-[var(--line-muted)]">
-                                      |
-                                    </span>
-                                  ) : null}
-                                </span>
-                              ))}
-                          </div>
-
-                          {isActiveStream && isThinking ? (
-                            <div
-                              aria-live="polite"
-                              aria-label="Assistant is thinking"
-                              className="flex items-center gap-2 py-1 text-[var(--text-muted)]"
-                            >
-                              <span className="font-mono text-xs tracking-[0.14em] text-[var(--accent-positive)]">
-                                SYSTEM: AWAITING_STREAM...
-                              </span>
-                              <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--accent-positive)] [animation-delay:-0.2s]" />
-                              <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--accent-positive)] [animation-delay:-0.1s]" />
-                              <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--accent-positive)]" />
-                            </div>
-                          ) : (
-                            <p className="max-w-4xl whitespace-pre-wrap text-sm leading-6 text-[var(--text-secondary)]">
-                              {message.content}
-                              {isActiveStream ? (
-                                <motion.span
-                                  aria-hidden="true"
-                                  animate={{ opacity: [0.2, 1, 0.2] }}
-                                  transition={{
-                                    duration: 0.9,
-                                    ease: "easeInOut",
-                                    repeat: Number.POSITIVE_INFINITY,
-                                  }}
-                                  className="ml-0.5 inline-block text-[var(--accent-positive)]"
-                                >
-                                  ▍
-                                </motion.span>
-                              ) : null}
-                            </p>
-                          )}
-                        </div>
-                      );
-                    })}
-                    <div ref={bottomRef} />
-                  </div>
-                </div>
-              </div>
-
-              <form
-                className="rounded-sm border border-[var(--panel-border)] bg-[var(--surface-bg-elevated)]"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  handleSubmit();
-                }}
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex min-h-0 flex-1 flex-col lg:hidden">
+            <div className="mb-2 shrink-0 rounded-md border border-[var(--panel-border)] bg-[var(--panel-bg)] p-2 shadow-[0_14px_36px_rgba(0,0,0,0.10)]">
+              <div
+                role="tablist"
+                aria-label="Dashboard sections"
+                className="flex gap-2"
               >
-                <div className="flex items-center justify-between gap-3 border-b border-[var(--panel-border)] px-3 py-2">
-                  <p className="font-mono text-xs text-[var(--text-muted)]">
-                    INPUT_BUFFER // COMMAND_LINE ACTIVE
-                  </p>
-                  <p className="font-mono text-xs text-[var(--line-muted)]">
-                    {isStreaming ? "STREAM_LOCK ENGAGED" : "READY_FOR_QUERY"}
-                  </p>
-                </div>
-                <div className="flex flex-col gap-3 px-3 py-3 sm:flex-row sm:items-end">
-                  <label className="flex-1">
-                    <span className="sr-only">Message the AI assistant</span>
-                    <input
-                      ref={inputRef}
-                      type="text"
-                      value={draftPrompt}
-                      disabled={isStreaming}
-                      onChange={(event) =>
-                        setDraftPromptWithHint(event.target.value)
-                      }
-                      onKeyDown={(event) => {
-                        if (event.key === "Tab" && isApprovalHintActive) {
-                          event.preventDefault();
-                          setDraftPromptWithHint(APPROVE_COMMAND);
-                          requestAnimationFrame(() => {
-                            inputRef.current?.focus();
-                            inputRef.current?.setSelectionRange(
-                              APPROVE_COMMAND.length,
-                              APPROVE_COMMAND.length,
-                            );
-                          });
-                          return;
-                        }
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeMobileTab === "chat"}
+                  aria-controls="mobile-chat-panel"
+                  id="mobile-chat-tab"
+                  onClick={() => switchMobileTab("chat")}
+                  className={`${mobileTabTriggerClassName} ${
+                    activeMobileTab === "chat"
+                      ? "border-emerald-500/40 bg-emerald-500/12 text-emerald-300"
+                      : "border-[var(--panel-border)] bg-[var(--surface-bg)] text-[var(--text-muted)]"
+                  }`}
+                >
+                  Chat
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeMobileTab === "approvals"}
+                  aria-controls="mobile-approvals-panel"
+                  id="mobile-approvals-tab"
+                  onClick={() => switchMobileTab("approvals")}
+                  className={`${mobileTabTriggerClassName} ${
+                    activeMobileTab === "approvals"
+                      ? "border-emerald-500/40 bg-emerald-500/12 text-emerald-300"
+                      : "border-[var(--panel-border)] bg-[var(--surface-bg)] text-[var(--text-muted)]"
+                  }`}
+                >
+                  Approvals
+                </button>
+              </div>
+            </div>
 
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          handleSubmit();
-                        }
-                      }}
-                      placeholder="Ask AI a question, or type /approve to authorize..."
-                      className="w-full rounded-sm border border-[var(--panel-border)] bg-[var(--surface-bg)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--panel-border-strong)] focus:ring-1 focus:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
-                    />
-                    {isApprovalHintActive ? (
-                      <p className="mt-2 font-mono text-xs text-zinc-500">
-                        Tab to autocomplete: {draftPrompt}
-                        <span className="text-zinc-500">{approvalHintSuffix}</span>
-                      </p>
-                    ) : null}
-                  </label>
+            <div
+              className="relative min-h-0 flex-1 overflow-hidden"
+              onTouchStart={handleMobileTouchStart}
+              onTouchEnd={handleMobileTouchEnd}
+            >
+              <AnimatePresence initial={false} custom={mobileTabDirection} mode="wait">
+                <motion.div
+                  key={activeMobileTab}
+                  custom={mobileTabDirection}
+                  initial={{ x: mobileTabDirection > 0 ? "16%" : "-16%", opacity: 0 }}
+                  animate={{ x: 0, opacity: 1 }}
+                  exit={{ x: mobileTabDirection > 0 ? "-16%" : "16%", opacity: 0 }}
+                  transition={{ duration: 0.24, ease: "easeOut" }}
+                  className="h-full min-h-0"
+                >
+                  {activeMobileTab === "chat"
+                    ? renderChatPanel(
+                        "mobile-chat-panel-title",
+                        "flex h-full min-h-0 flex-col rounded-md border border-[var(--panel-border)] bg-[var(--panel-bg)] shadow-[0_14px_36px_rgba(0,0,0,0.10)]",
+                        "mobile-chat-panel",
+                        "mobile-chat-tab",
+                      )
+                    : renderApprovalsPanel(
+                        "mobile-approvals-panel-title",
+                        "flex h-full min-h-0 min-w-0 flex-col rounded-md border border-[var(--panel-border)] bg-[var(--panel-bg)] shadow-[0_14px_36px_rgba(0,0,0,0.10)]",
+                        "mobile-approvals-panel",
+                        "mobile-approvals-tab",
+                      )}
+                </motion.div>
+              </AnimatePresence>
+            </div>
+
+            <div className="mt-3 flex shrink-0 items-center justify-center gap-2">
+              {MOBILE_TAB_ORDER.map((tab) => {
+                const isActive = tab === activeMobileTab;
+
+                return (
                   <button
-                    type="submit"
-                    disabled={isStreaming || draftPrompt.trim().length === 0}
-                    className="rounded-sm border border-emerald-500/35 bg-emerald-500/10 px-4 py-2.5 font-mono text-xs tracking-[0.16em] text-emerald-400 transition-colors hover:bg-emerald-500/16 focus:ring-2 focus:ring-emerald-500 focus:outline-none disabled:cursor-not-allowed disabled:border-[var(--panel-border)] disabled:bg-[var(--surface-bg)] disabled:text-[var(--text-muted)] disabled:hover:bg-[var(--surface-bg)]"
-                  >
-                    SEND
-                  </button>
-                  {isStreaming ? (
-                    <button
-                      type="button"
-                      onClick={handleStopStream}
-                      className="rounded-sm border border-red-500/30 bg-red-500/10 px-3 py-2.5 font-mono text-xs tracking-[0.16em] text-red-500 transition-colors hover:bg-red-500/16 focus:ring-2 focus:ring-red-500 focus:outline-none"
-                    >
-                      STOP
-                    </button>
-                  ) : null}
-                </div>
-              </form>
+                    key={tab}
+                    type="button"
+                    aria-label={`Show ${tab} panel`}
+                    aria-pressed={isActive}
+                    onClick={() => switchMobileTab(tab)}
+                    className={`h-2.5 w-2.5 rounded-full border transition-all ${
+                      isActive
+                        ? "border-emerald-400 bg-emerald-400 shadow-[0_0_10px_rgba(69,198,154,0.45)]"
+                        : "border-[var(--panel-border-strong)] bg-transparent"
+                    }`}
+                  />
+                );
+              })}
             </div>
-          </section>
+          </div>
 
-          <section
-            aria-labelledby="approvals-panel-title"
-            className="flex min-h-[28rem] min-w-0 flex-col rounded-md border border-[var(--panel-border)] bg-[var(--panel-bg)] shadow-[0_14px_36px_rgba(0,0,0,0.10)] lg:h-full lg:min-h-0"
-          >
-            <div className="flex items-center justify-between gap-3 rounded-t-md border-b border-[var(--panel-border)] bg-[var(--surface-bg)] px-3 py-2">
-              <div className="flex items-center gap-3">
-                <div>
-                  <p className="font-mono text-xs tracking-wide text-[var(--accent-positive)]">
-                    MODULE: HUMAN_APPROVAL_QUEUE
-                  </p>
-                  <h2
-                    id="approvals-panel-title"
-                    className="mt-1 text-sm font-semibold uppercase tracking-[0.18em] text-[var(--text-primary)]"
-                  >
-                    Pending Approvals
-                  </h2>
-                </div>
-                <span className="rounded-sm border border-[var(--panel-border)] bg-[var(--surface-bg-elevated)] px-2 py-0.5 font-mono text-xs text-[var(--accent-positive)]">
-                  {(hasHydratedApprovals ? pendingCount : approvals.length)
-                    .toString()
-                    .padStart(2, "0")}
-                </span>
-              </div>
-              <div className="font-mono text-xs text-[var(--text-muted)]">
-                FEED: PRIORITY_SORT
-              </div>
-            </div>
-
-            <div className="grid min-h-0 flex-1 gap-3 p-3">
-              <div className="min-h-0 overflow-hidden rounded-sm border border-[var(--panel-border)] bg-[var(--surface-bg-elevated)]">
-                <div className="flex h-full min-h-0 flex-col overflow-y-auto p-3">
-                  {!hasHydratedApprovals ? (
-                    <div className="flex h-full items-center justify-center rounded-sm border border-dashed border-[var(--panel-border-strong)] bg-[var(--surface-bg-elevated)] px-4 py-8 text-center">
-                      <div>
-                        <p className="font-mono text-xs tracking-[0.18em] text-[var(--accent-positive)]">
-                          SYNCING_QUEUE
-                        </p>
-                        <p className="mt-3 text-sm text-[var(--text-secondary)]">
-                          Restoring your saved approval state...
-                        </p>
-                      </div>
-                    </div>
-                  ) : approvalItems.length === 0 ? (
-                    <div className="flex h-full items-center justify-center rounded-sm border border-dashed border-[var(--panel-border-strong)] bg-[var(--surface-bg-elevated)] px-4 py-8 text-center">
-                      <div>
-                        <p className="font-mono text-xs tracking-[0.18em] text-[var(--accent-positive)]">
-                          QUEUE_EMPTY
-                        </p>
-                        <p className="mt-3 text-sm text-[var(--text-secondary)]">
-                          All pending authorizations cleared.
-                        </p>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-3 pr-1">
-                      <AnimatePresence initial={false}>
-                        {approvalItems.map((approval) => {
-                          const amount = extractAmount(approval.action);
-                          const decision = approvalStates[approval.id];
-                          const isProcessing = Boolean(
-                            processingApprovals[approval.id],
-                          );
-                          const cardBorderClass =
-                            decision === "approve"
-                              ? "border-emerald-500/45 shadow-[0_0_0_1px_rgba(16,185,129,0.22)]"
-                              : decision === "reject"
-                                ? "border-rose-500/40 shadow-[0_0_0_1px_rgba(244,63,94,0.18)]"
-                                : "border-[var(--panel-border)] hover:border-[var(--panel-border-strong)]";
-
-                          return (
-                            <motion.article
-                              key={approval.id}
-                              layout
-                              initial={{ opacity: 0, y: 14, scale: 0.98 }}
-                              animate={{ opacity: 1, y: 0, scale: 1 }}
-                              exit={{ opacity: 0, y: -10, scale: 0.97 }}
-                              transition={{ duration: 0.18, ease: "easeOut" }}
-                              className={`rounded-sm border bg-[var(--surface-bg-elevated)] p-3 transition-colors ${cardBorderClass}`}
-                            >
-                              <div className="mb-3 flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                  <p className="font-mono text-xs text-[var(--text-muted)]">
-                                    {approval.id}
-                                  </p>
-                                  <p className="mt-2 text-sm leading-6 text-[var(--text-primary)]">
-                                    {approval.action}
-                                  </p>
-                                </div>
-                                <span className="border border-emerald-500/30 px-2 py-1 font-mono text-xs text-emerald-400">
-                                  {isProcessing ? "PROCESSING" : "PENDING"}
-                                </span>
-                              </div>
-
-                              <div className="flex flex-wrap items-center gap-2 font-mono text-xs text-[var(--text-muted)]">
-                                <span>
-                                  {formatTerminalTimestamp(approval.requestedAt)}
-                                </span>
-                                <span className="text-[var(--line-muted)]">|</span>
-                                <span>{approval.meta}</span>
-                                {amount ? (
-                                  <>
-                                    <span className="text-[var(--line-muted)]">
-                                      |
-                                    </span>
-                                    <span>NOTIONAL: {amount}</span>
-                                  </>
-                                ) : null}
-                              </div>
-
-                              <div className="mt-4 flex gap-2">
-                                <button
-                                  type="button"
-                                  aria-label={`Approve ${approval.id}`}
-                                  aria-pressed={decision === "approve"}
-                                  disabled={isProcessing}
-                                  onClick={() =>
-                                    handleDecision(approval.id, "approve")
-                                  }
-                                  className={`rounded-sm border px-3 py-1.5 font-mono text-xs transition-colors focus:ring-2 focus:ring-emerald-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
-                                    decision === "approve"
-                                      ? "border-emerald-500/50 bg-emerald-500/14 text-emerald-300"
-                                      : "border-emerald-500/30 bg-emerald-500/6 text-emerald-400 hover:bg-emerald-500/12"
-                                  }`}
-                                >
-                                  APPROVE
-                                </button>
-                                <button
-                                  type="button"
-                                  aria-label={`Reject ${approval.id}`}
-                                  aria-pressed={decision === "reject"}
-                                  disabled={isProcessing}
-                                  onClick={() =>
-                                    handleDecision(approval.id, "reject")
-                                  }
-                                  className={`rounded-sm border px-3 py-1.5 font-mono text-xs transition-colors focus:ring-2 focus:ring-rose-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
-                                    decision === "reject"
-                                      ? "border-rose-500/45 bg-rose-500/14 text-rose-300"
-                                      : "border-rose-500/25 bg-rose-500/5 text-rose-400 hover:bg-rose-500/10"
-                                  }`}
-                                >
-                                  REJECT
-                                </button>
-                              </div>
-                            </motion.article>
-                          );
-                        })}
-                      </AnimatePresence>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </section>
+          <div className="hidden min-h-0 flex-1 gap-3 lg:grid lg:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.85fr)]">
+            {renderChatPanel(
+              "desktop-chat-panel-title",
+              "flex min-h-0 flex-col rounded-md border border-[var(--panel-border)] bg-[var(--panel-bg)] shadow-[0_14px_36px_rgba(0,0,0,0.10)]",
+            )}
+            {renderApprovalsPanel(
+              "desktop-approvals-panel-title",
+              "flex min-h-0 min-w-0 flex-col rounded-md border border-[var(--panel-border)] bg-[var(--panel-bg)] shadow-[0_14px_36px_rgba(0,0,0,0.10)]",
+            )}
+          </div>
         </div>
       </div>
     </main>
