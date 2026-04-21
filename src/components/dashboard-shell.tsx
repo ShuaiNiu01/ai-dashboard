@@ -826,9 +826,9 @@ export default function DashboardShell({
   }
 
   return (
-    <main className="min-h-screen bg-[var(--app-bg)] text-[var(--text-primary)] transition-colors duration-200">
-      <div className="mx-auto flex min-h-screen w-full max-w-[1600px] flex-col px-3 py-3 sm:px-4">
-        <header className="mb-3 flex flex-col gap-2 rounded-md border border-[var(--panel-border)] bg-[var(--panel-bg)] px-3 py-2 shadow-[0_10px_30px_rgba(0,0,0,0.12)] sm:flex-row sm:items-center sm:justify-between">
+    <main className="min-h-screen bg-[var(--app-bg)] text-[var(--text-primary)] transition-colors duration-200 lg:h-[100dvh] lg:overflow-hidden">
+      <div className="mx-auto flex min-h-screen w-full max-w-[1600px] flex-col px-3 py-3 sm:px-4 lg:h-full lg:min-h-0">
+        <header className="mb-3 shrink-0 flex flex-col gap-2 rounded-md border border-[var(--panel-border)] bg-[var(--panel-bg)] px-3 py-2 shadow-[0_10px_30px_rgba(0,0,0,0.12)] sm:flex-row sm:items-center sm:justify-between">
           <div className="font-mono text-xs text-[var(--text-muted)]">
             SYSTEM: AI-CORE // ENV: PROD // REGION: USE1 // LATENCY: 18MS
           </div>
@@ -852,10 +852,10 @@ export default function DashboardShell({
           </div>
         </header>
 
-        <div className="grid flex-1 gap-3 lg:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.85fr)]">
+        <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.85fr)]">
           <section
             aria-labelledby="chat-panel-title"
-            className="flex min-h-[36rem] flex-col rounded-md border border-[var(--panel-border)] bg-[var(--panel-bg)] shadow-[0_14px_36px_rgba(0,0,0,0.10)]"
+            className="flex min-h-[28rem] flex-col rounded-md border border-[var(--panel-border)] bg-[var(--panel-bg)] shadow-[0_14px_36px_rgba(0,0,0,0.10)] lg:h-full lg:min-h-0"
           >
             <div className="flex items-center justify-between gap-3 rounded-t-md border-b border-[var(--panel-border)] bg-[var(--surface-bg)] px-3 py-2">
               <div>
@@ -1034,7 +1034,7 @@ export default function DashboardShell({
 
           <section
             aria-labelledby="approvals-panel-title"
-            className="flex min-h-[36rem] flex-col rounded-md border border-[var(--panel-border)] bg-[var(--panel-bg)] shadow-[0_14px_36px_rgba(0,0,0,0.10)]"
+            className="flex min-h-[28rem] min-w-0 flex-col rounded-md border border-[var(--panel-border)] bg-[var(--panel-bg)] shadow-[0_14px_36px_rgba(0,0,0,0.10)] lg:h-full lg:min-h-0"
           >
             <div className="flex items-center justify-between gap-3 rounded-t-md border-b border-[var(--panel-border)] bg-[var(--surface-bg)] px-3 py-2">
               <div className="flex items-center gap-3">
@@ -1058,103 +1058,117 @@ export default function DashboardShell({
               </div>
             </div>
 
-            <div className="flex flex-1 flex-col gap-3 p-3">
-              <div className="flex flex-1 flex-col gap-3">
-                <AnimatePresence initial={false}>
-                  {approvalItems.map((approval) => {
-                    const amount = extractAmount(approval.action);
-                    const decision = approvalStates[approval.id];
-                    const isProcessing = Boolean(processingApprovals[approval.id]);
-                    const cardBorderClass =
-                      decision === "approve"
-                        ? "border-emerald-500/45 shadow-[0_0_0_1px_rgba(16,185,129,0.22)]"
-                        : decision === "reject"
-                          ? "border-rose-500/40 shadow-[0_0_0_1px_rgba(244,63,94,0.18)]"
-                          : "border-[var(--panel-border)] hover:border-[var(--panel-border-strong)]";
-
-                    return (
-                      <motion.article
-                        key={approval.id}
-                        layout
-                        initial={{ opacity: 0, y: 14, scale: 0.98 }}
-                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                        exit={{ opacity: 0, y: -10, scale: 0.97 }}
-                        transition={{ duration: 0.18, ease: "easeOut" }}
-                        className={`rounded-sm border bg-[var(--surface-bg-elevated)] p-3 transition-colors ${cardBorderClass}`}
-                      >
-                        <div className="mb-3 flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="font-mono text-xs text-[var(--text-muted)]">
-                              {approval.id}
-                            </p>
-                            <p className="mt-2 text-sm leading-6 text-[var(--text-primary)]">
-                              {approval.action}
-                            </p>
-                          </div>
-                          <span className="border border-emerald-500/30 px-2 py-1 font-mono text-xs text-emerald-400">
-                            {isProcessing ? "PROCESSING" : "PENDING"}
-                          </span>
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-2 font-mono text-xs text-[var(--text-muted)]">
-                          <span>{formatTerminalTimestamp(approval.requestedAt)}</span>
-                          <span className="text-[var(--line-muted)]">|</span>
-                          <span>{approval.meta}</span>
-                          {amount ? (
-                            <>
-                              <span className="text-[var(--line-muted)]">|</span>
-                              <span>NOTIONAL: {amount}</span>
-                            </>
-                          ) : null}
-                        </div>
-
-                        <div className="mt-4 flex gap-2">
-                          <button
-                            type="button"
-                            aria-label={`Approve ${approval.id}`}
-                            aria-pressed={decision === "approve"}
-                            disabled={isProcessing}
-                            onClick={() => handleDecision(approval.id, "approve")}
-                            className={`rounded-sm border px-3 py-1.5 font-mono text-xs transition-colors focus:ring-2 focus:ring-emerald-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
-                              decision === "approve"
-                                ? "border-emerald-500/50 bg-emerald-500/14 text-emerald-300"
-                                : "border-emerald-500/30 bg-emerald-500/6 text-emerald-400 hover:bg-emerald-500/12"
-                            }`}
-                          >
-                            APPROVE
-                          </button>
-                          <button
-                            type="button"
-                            aria-label={`Reject ${approval.id}`}
-                            aria-pressed={decision === "reject"}
-                            disabled={isProcessing}
-                            onClick={() => handleDecision(approval.id, "reject")}
-                            className={`rounded-sm border px-3 py-1.5 font-mono text-xs transition-colors focus:ring-2 focus:ring-rose-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
-                              decision === "reject"
-                                ? "border-rose-500/45 bg-rose-500/14 text-rose-300"
-                                : "border-rose-500/25 bg-rose-500/5 text-rose-400 hover:bg-rose-500/10"
-                            }`}
-                          >
-                            REJECT
-                          </button>
-                        </div>
-                      </motion.article>
-                    );
-                  })}
-                </AnimatePresence>
-
-                {approvalItems.length === 0 ? (
-                  <div className="flex flex-1 items-center justify-center rounded-sm border border-dashed border-[var(--panel-border-strong)] bg-[var(--surface-bg-elevated)] px-4 py-8 text-center">
-                    <div>
-                      <p className="font-mono text-xs tracking-[0.18em] text-[var(--accent-positive)]">
-                        QUEUE_EMPTY
-                      </p>
-                      <p className="mt-3 text-sm text-[var(--text-secondary)]">
-                        All pending authorizations cleared.
-                      </p>
+            <div className="grid min-h-0 flex-1 gap-3 p-3">
+              <div className="min-h-0 overflow-hidden rounded-sm border border-[var(--panel-border)] bg-[var(--surface-bg-elevated)]">
+                <div className="flex h-full min-h-0 flex-col overflow-y-auto p-3">
+                  {approvalItems.length === 0 ? (
+                    <div className="flex h-full items-center justify-center rounded-sm border border-dashed border-[var(--panel-border-strong)] bg-[var(--surface-bg-elevated)] px-4 py-8 text-center">
+                      <div>
+                        <p className="font-mono text-xs tracking-[0.18em] text-[var(--accent-positive)]">
+                          QUEUE_EMPTY
+                        </p>
+                        <p className="mt-3 text-sm text-[var(--text-secondary)]">
+                          All pending authorizations cleared.
+                        </p>
+                      </div>
                     </div>
-                  </div>
-                ) : null}
+                  ) : (
+                    <div className="space-y-3 pr-1">
+                      <AnimatePresence initial={false}>
+                        {approvalItems.map((approval) => {
+                          const amount = extractAmount(approval.action);
+                          const decision = approvalStates[approval.id];
+                          const isProcessing = Boolean(
+                            processingApprovals[approval.id],
+                          );
+                          const cardBorderClass =
+                            decision === "approve"
+                              ? "border-emerald-500/45 shadow-[0_0_0_1px_rgba(16,185,129,0.22)]"
+                              : decision === "reject"
+                                ? "border-rose-500/40 shadow-[0_0_0_1px_rgba(244,63,94,0.18)]"
+                                : "border-[var(--panel-border)] hover:border-[var(--panel-border-strong)]";
+
+                          return (
+                            <motion.article
+                              key={approval.id}
+                              layout
+                              initial={{ opacity: 0, y: 14, scale: 0.98 }}
+                              animate={{ opacity: 1, y: 0, scale: 1 }}
+                              exit={{ opacity: 0, y: -10, scale: 0.97 }}
+                              transition={{ duration: 0.18, ease: "easeOut" }}
+                              className={`rounded-sm border bg-[var(--surface-bg-elevated)] p-3 transition-colors ${cardBorderClass}`}
+                            >
+                              <div className="mb-3 flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <p className="font-mono text-xs text-[var(--text-muted)]">
+                                    {approval.id}
+                                  </p>
+                                  <p className="mt-2 text-sm leading-6 text-[var(--text-primary)]">
+                                    {approval.action}
+                                  </p>
+                                </div>
+                                <span className="border border-emerald-500/30 px-2 py-1 font-mono text-xs text-emerald-400">
+                                  {isProcessing ? "PROCESSING" : "PENDING"}
+                                </span>
+                              </div>
+
+                              <div className="flex flex-wrap items-center gap-2 font-mono text-xs text-[var(--text-muted)]">
+                                <span>
+                                  {formatTerminalTimestamp(approval.requestedAt)}
+                                </span>
+                                <span className="text-[var(--line-muted)]">|</span>
+                                <span>{approval.meta}</span>
+                                {amount ? (
+                                  <>
+                                    <span className="text-[var(--line-muted)]">
+                                      |
+                                    </span>
+                                    <span>NOTIONAL: {amount}</span>
+                                  </>
+                                ) : null}
+                              </div>
+
+                              <div className="mt-4 flex gap-2">
+                                <button
+                                  type="button"
+                                  aria-label={`Approve ${approval.id}`}
+                                  aria-pressed={decision === "approve"}
+                                  disabled={isProcessing}
+                                  onClick={() =>
+                                    handleDecision(approval.id, "approve")
+                                  }
+                                  className={`rounded-sm border px-3 py-1.5 font-mono text-xs transition-colors focus:ring-2 focus:ring-emerald-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
+                                    decision === "approve"
+                                      ? "border-emerald-500/50 bg-emerald-500/14 text-emerald-300"
+                                      : "border-emerald-500/30 bg-emerald-500/6 text-emerald-400 hover:bg-emerald-500/12"
+                                  }`}
+                                >
+                                  APPROVE
+                                </button>
+                                <button
+                                  type="button"
+                                  aria-label={`Reject ${approval.id}`}
+                                  aria-pressed={decision === "reject"}
+                                  disabled={isProcessing}
+                                  onClick={() =>
+                                    handleDecision(approval.id, "reject")
+                                  }
+                                  className={`rounded-sm border px-3 py-1.5 font-mono text-xs transition-colors focus:ring-2 focus:ring-rose-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
+                                    decision === "reject"
+                                      ? "border-rose-500/45 bg-rose-500/14 text-rose-300"
+                                      : "border-rose-500/25 bg-rose-500/5 text-rose-400 hover:bg-rose-500/10"
+                                  }`}
+                                >
+                                  REJECT
+                                </button>
+                              </div>
+                            </motion.article>
+                          );
+                        })}
+                      </AnimatePresence>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </section>
