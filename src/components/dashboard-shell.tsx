@@ -30,6 +30,7 @@ const OPENROUTER_MODEL =
 const FALLBACK_AI_PROVIDER = process.env.NEXT_PUBLIC_FALLBACK_AI_PROVIDER
   ?.trim()
   .toLowerCase();
+const APPROVE_COMMAND = "/approve ";
 
 interface StreamProviderConfig {
   kind: StreamProviderKind;
@@ -350,7 +351,10 @@ export default function DashboardShell({
   );
   const [isStreaming, setIsStreaming] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
+  const [isApprovalHintActive, setIsApprovalHintActive] = useState(false);
+  const [approvalHintSuffix, setApprovalHintSuffix] = useState("");
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const streamAbortControllerRef = useRef<AbortController | null>(null);
   const pendingCount = approvalItems.length;
 
@@ -699,6 +703,28 @@ export default function DashboardShell({
     }, APPROVAL_EXIT_DELAY_MS);
   }
 
+  function updateApprovalCommandHint(value: string): void {
+    const normalizedValue = value.toLowerCase();
+    const isPartialApproveCommand =
+      normalizedValue.startsWith("/") &&
+      APPROVE_COMMAND.startsWith(normalizedValue) &&
+      normalizedValue !== APPROVE_COMMAND;
+
+    if (!isPartialApproveCommand) {
+      setIsApprovalHintActive(false);
+      setApprovalHintSuffix("");
+      return;
+    }
+
+    setIsApprovalHintActive(true);
+    setApprovalHintSuffix(APPROVE_COMMAND.slice(value.length));
+  }
+
+  function setDraftPromptWithHint(nextValue: string): void {
+    setDraftPrompt(nextValue);
+    updateApprovalCommandHint(nextValue);
+  }
+
   function appendSystemMessage(content: string): void {
     setChatMessages((currentMessages) => [
       ...currentMessages,
@@ -757,7 +783,7 @@ export default function DashboardShell({
       appendSystemMessage(
         "[SYSTEM: Authorization request successfully routed to Pending Approvals.]",
       );
-      setDraftPrompt("");
+      setDraftPromptWithHint("");
       return;
     }
 
@@ -792,7 +818,7 @@ export default function DashboardShell({
 
       return nextMessages;
     });
-    setDraftPrompt("");
+    setDraftPromptWithHint("");
     setIsStreaming(true);
     setIsThinking(true);
     setStreamingMessageId(assistantMessageId);
@@ -949,19 +975,41 @@ export default function DashboardShell({
                   <label className="flex-1">
                     <span className="sr-only">Message the AI assistant</span>
                     <input
+                      ref={inputRef}
                       type="text"
                       value={draftPrompt}
                       disabled={isStreaming}
-                      onChange={(event) => setDraftPrompt(event.target.value)}
+                      onChange={(event) =>
+                        setDraftPromptWithHint(event.target.value)
+                      }
                       onKeyDown={(event) => {
+                        if (event.key === "Tab" && isApprovalHintActive) {
+                          event.preventDefault();
+                          setDraftPromptWithHint(APPROVE_COMMAND);
+                          requestAnimationFrame(() => {
+                            inputRef.current?.focus();
+                            inputRef.current?.setSelectionRange(
+                              APPROVE_COMMAND.length,
+                              APPROVE_COMMAND.length,
+                            );
+                          });
+                          return;
+                        }
+
                         if (event.key === "Enter") {
                           event.preventDefault();
                           handleSubmit();
                         }
                       }}
-                      placeholder="Ask about Q2 performance, approvals, or model output..."
+                      placeholder="Ask AI a question, or type /approve to authorize..."
                       className="w-full rounded-sm border border-[var(--panel-border)] bg-[var(--surface-bg)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--panel-border-strong)] focus:ring-1 focus:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
                     />
+                    {isApprovalHintActive ? (
+                      <p className="mt-2 font-mono text-xs text-zinc-500">
+                        Tab to autocomplete: {draftPrompt}
+                        <span className="text-zinc-500">{approvalHintSuffix}</span>
+                      </p>
+                    ) : null}
                   </label>
                   <button
                     type="submit"
