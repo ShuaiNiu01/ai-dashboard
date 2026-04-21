@@ -10,6 +10,7 @@ import {
 } from "react";
 
 import type { ApprovalItem } from "@/src/data";
+import { useLocalStorage } from "@/src/hooks/useLocalStorage";
 
 type ThemeMode = "dark" | "light";
 type ApprovalDecision = "approve" | "reject";
@@ -332,7 +333,10 @@ export default function DashboardShell({
     getThemeSnapshot,
     getServerThemeSnapshot,
   );
-  const [approvalItems, setApprovals] = useState<ApprovalItem[]>(() => approvals);
+  const [approvalItems, setApprovals] = useLocalStorage<ApprovalItem[]>(
+    "dashboard-approvals",
+    approvals,
+  );
   const [approvalStates, setApprovalStates] = useState<
     Partial<Record<string, ApprovalDecision>>
   >({});
@@ -353,6 +357,7 @@ export default function DashboardShell({
   const [isThinking, setIsThinking] = useState(false);
   const [isApprovalHintActive, setIsApprovalHintActive] = useState(false);
   const [approvalHintSuffix, setApprovalHintSuffix] = useState("");
+  const [hasHydratedApprovals, setHasHydratedApprovals] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const streamAbortControllerRef = useRef<AbortController | null>(null);
@@ -362,6 +367,10 @@ export default function DashboardShell({
     document.documentElement.dataset.theme = themeMode;
     window.localStorage.setItem("dashboard-theme", themeMode);
   }, [themeMode]);
+
+  useEffect(() => {
+    setHasHydratedApprovals(true);
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -1050,7 +1059,9 @@ export default function DashboardShell({
                   </h2>
                 </div>
                 <span className="rounded-sm border border-[var(--panel-border)] bg-[var(--surface-bg-elevated)] px-2 py-0.5 font-mono text-xs text-[var(--accent-positive)]">
-                  {pendingCount.toString().padStart(2, "0")}
+                  {(hasHydratedApprovals ? pendingCount : approvals.length)
+                    .toString()
+                    .padStart(2, "0")}
                 </span>
               </div>
               <div className="font-mono text-xs text-[var(--text-muted)]">
@@ -1061,7 +1072,18 @@ export default function DashboardShell({
             <div className="grid min-h-0 flex-1 gap-3 p-3">
               <div className="min-h-0 overflow-hidden rounded-sm border border-[var(--panel-border)] bg-[var(--surface-bg-elevated)]">
                 <div className="flex h-full min-h-0 flex-col overflow-y-auto p-3">
-                  {approvalItems.length === 0 ? (
+                  {!hasHydratedApprovals ? (
+                    <div className="flex h-full items-center justify-center rounded-sm border border-dashed border-[var(--panel-border-strong)] bg-[var(--surface-bg-elevated)] px-4 py-8 text-center">
+                      <div>
+                        <p className="font-mono text-xs tracking-[0.18em] text-[var(--accent-positive)]">
+                          SYNCING_QUEUE
+                        </p>
+                        <p className="mt-3 text-sm text-[var(--text-secondary)]">
+                          Restoring your saved approval state...
+                        </p>
+                      </div>
+                    </div>
+                  ) : approvalItems.length === 0 ? (
                     <div className="flex h-full items-center justify-center rounded-sm border border-dashed border-[var(--panel-border-strong)] bg-[var(--surface-bg-elevated)] px-4 py-8 text-center">
                       <div>
                         <p className="font-mono text-xs tracking-[0.18em] text-[var(--accent-positive)]">
