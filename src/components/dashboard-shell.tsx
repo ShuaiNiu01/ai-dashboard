@@ -97,6 +97,69 @@ class StreamHttpError extends Error {
 
 interface DashboardShellProps {
   approvals: ApprovalItem[];
+  initialTheme: ThemeMode;
+}
+
+function applyThemeToDocument(theme: ThemeMode): void {
+  const root = document.documentElement;
+  const body = document.body;
+
+  const themeVars =
+    theme === "light"
+      ? {
+          colorScheme: "light",
+          backgroundColor: "#edf1f4",
+          color: "#17202a",
+          "--background": "#edf1f4",
+          "--foreground": "#17202a",
+          "--app-bg": "#edf1f4",
+          "--panel-bg": "#f8fafb",
+          "--surface-bg": "#f3f6f8",
+          "--surface-bg-elevated": "#ffffff",
+          "--surface-hover": "#eef3f6",
+          "--panel-border": "#d3dbe3",
+          "--panel-border-strong": "#bbc7d2",
+          "--text-primary": "#17202a",
+          "--text-secondary": "#334155",
+          "--text-muted": "#708090",
+          "--line-muted": "#a3b0bc",
+          "--accent-positive": "#148a63",
+          "--accent-positive-soft": "rgba(20, 138, 99, 0.22)",
+        }
+      : {
+          colorScheme: "dark",
+          backgroundColor: "#14181d",
+          color: "#e6e8eb",
+          "--background": "#14181d",
+          "--foreground": "#e6e8eb",
+          "--app-bg": "#14181d",
+          "--panel-bg": "#1a1f26",
+          "--surface-bg": "#171b22",
+          "--surface-bg-elevated": "#1d232b",
+          "--surface-hover": "#232a33",
+          "--panel-border": "#2a313b",
+          "--panel-border-strong": "#3a4450",
+          "--text-primary": "#e6e8eb",
+          "--text-secondary": "#d5dae0",
+          "--text-muted": "#8792a0",
+          "--line-muted": "#4b5662",
+          "--accent-positive": "#45c69a",
+          "--accent-positive-soft": "rgba(69, 198, 154, 0.32)",
+        };
+
+  root.dataset.theme = theme;
+  root.style.colorScheme = themeVars.colorScheme;
+  root.style.backgroundColor = themeVars.backgroundColor;
+  root.style.color = themeVars.color;
+  body.style.backgroundColor = themeVars.backgroundColor;
+  body.style.color = themeVars.color;
+
+  Object.entries(themeVars).forEach(([key, value]) => {
+    if (key.startsWith("--")) {
+      root.style.setProperty(key, value);
+      body.style.setProperty(key, value);
+    }
+  });
 }
 
 // Render deterministic terminal timestamps to avoid server/client drift.
@@ -118,10 +181,6 @@ function getThemeSnapshot(): ThemeMode {
   return window.localStorage.getItem("dashboard-theme") === "light"
     ? "light"
     : "dark";
-}
-
-function getServerThemeSnapshot(): ThemeMode {
-  return "dark";
 }
 
 const INITIAL_CHAT_MESSAGES: ChatMessage[] = [
@@ -327,11 +386,12 @@ function extractGoogleText(chunk: GoogleStreamChunk): string {
 
 export default function DashboardShell({
   approvals,
+  initialTheme,
 }: DashboardShellProps): ReactElement {
   const themeMode = useSyncExternalStore(
     subscribeToTheme,
     getThemeSnapshot,
-    getServerThemeSnapshot,
+    () => initialTheme,
   );
   const [approvalItems, setApprovals] = useLocalStorage<ApprovalItem[]>(
     "dashboard-approvals",
@@ -364,8 +424,8 @@ export default function DashboardShell({
   const pendingCount = approvalItems.length;
 
   useEffect(() => {
-    document.documentElement.dataset.theme = themeMode;
-    window.localStorage.setItem("dashboard-theme", themeMode);
+    applyThemeToDocument(themeMode);
+    document.documentElement.dataset.themeReady = "true";
   }, [themeMode]);
 
   useEffect(() => {
@@ -684,7 +744,8 @@ export default function DashboardShell({
     const nextTheme: ThemeMode = themeMode === "dark" ? "light" : "dark";
 
     window.localStorage.setItem("dashboard-theme", nextTheme);
-    document.documentElement.dataset.theme = nextTheme;
+    document.cookie = `dashboard-theme=${nextTheme}; path=/; max-age=31536000; samesite=lax`;
+    applyThemeToDocument(nextTheme);
     window.dispatchEvent(new Event(THEME_EVENT));
   }
 
