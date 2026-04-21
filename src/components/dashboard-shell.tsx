@@ -3,17 +3,27 @@
 import { AnimatePresence, motion } from "framer-motion";
 import {
   useEffect,
+  useRef,
   useState,
   useSyncExternalStore,
   type ReactElement,
 } from "react";
 
 import type { ApprovalItem } from "@/src/data";
+import { simulateStream } from "@/src/utils/simulateStream";
 
 type ThemeMode = "dark" | "light";
 type ApprovalDecision = "approve" | "reject";
+type ChatRole = "assistant" | "user";
 const THEME_EVENT = "dashboard-theme-change";
 const APPROVAL_EXIT_DELAY_MS = 140;
+
+interface ChatMessage {
+  id: string;
+  role: ChatRole;
+  content: string;
+  meta: string;
+}
 
 interface DashboardShellProps {
   approvals: ApprovalItem[];
@@ -43,6 +53,23 @@ function getThemeSnapshot(): ThemeMode {
 function getServerThemeSnapshot(): ThemeMode {
   return "dark";
 }
+
+const INITIAL_CHAT_MESSAGES: ChatMessage[] = [
+  {
+    id: "seed-user",
+    role: "user",
+    meta: "USER | CHANNEL: OPS_DESK | 09:31:12 AST",
+    content:
+      "Summarize the active exception queue and isolate any actions still blocked on human authorization before market close.",
+  },
+  {
+    id: "seed-assistant",
+    role: "assistant",
+    meta: "AI-CORE | MODEL: REVIEW_AGENT_V2 | STREAM: STANDBY",
+    content:
+      "Three high-value operations remain gated. Human review is required for wire authorization, portfolio rebalance execution, and quarterly compliance reporting. Approval queue is mirrored in the right panel with transaction-level metadata.",
+  },
+];
 
 function subscribeToTheme(onStoreChange: () => void): () => void {
   if (typeof window === "undefined") {
@@ -81,12 +108,94 @@ export default function DashboardShell({
   const [processingApprovals, setProcessingApprovals] = useState<
     Record<string, true>
   >({});
+  const [chatMessages, setChatMessages] =
+    useState<ChatMessage[]>(INITIAL_CHAT_MESSAGES);
+  const [draftPrompt, setDraftPrompt] = useState("");
+  const [activePrompt, setActivePrompt] = useState<string | null>(null);
+  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(
+    null,
+  );
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [isThinking, setIsThinking] = useState(false);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
   const pendingCount = approvalItems.length;
 
   useEffect(() => {
     document.documentElement.dataset.theme = themeMode;
     window.localStorage.setItem("dashboard-theme", themeMode);
   }, [themeMode]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages, isThinking]);
+
+  useEffect(() => {
+    if (!activePrompt || !streamingMessageId) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const promptToStream = activePrompt;
+    const targetMessageId = streamingMessageId;
+
+    async function streamResponse(): Promise<void> {
+      try {
+        let hasReceivedFirstToken = false;
+
+        for await (const chunk of simulateStream(promptToStream)) {
+          if (controller.signal.aborted) {
+            return;
+          }
+
+          if (!hasReceivedFirstToken) {
+            hasReceivedFirstToken = true;
+            setIsThinking(false);
+          }
+
+          setChatMessages((currentMessages) =>
+            currentMessages.map((message) =>
+              message.id === targetMessageId
+                ? { ...message, content: message.content + chunk }
+                : message,
+            ),
+          );
+        }
+
+        if (!controller.signal.aborted) {
+          setIsThinking(false);
+          setIsStreaming(false);
+          setStreamingMessageId(null);
+          setActivePrompt(null);
+        }
+      } catch {
+        if (controller.signal.aborted) {
+          return;
+        }
+
+          setChatMessages((currentMessages) =>
+          currentMessages.map((message) =>
+            message.id === targetMessageId
+              ? {
+                  ...message,
+                  content:
+                    "Streaming interrupted while processing the request. Please retry the query.",
+                }
+              : message,
+          ),
+        );
+        setIsThinking(false);
+        setIsStreaming(false);
+        setStreamingMessageId(null);
+        setActivePrompt(null);
+      }
+    }
+
+    void streamResponse();
+
+    return () => {
+      controller.abort();
+    };
+  }, [activePrompt, streamingMessageId]);
 
   function handleThemeToggle(): void {
     const nextTheme: ThemeMode = themeMode === "dark" ? "light" : "dark";
@@ -118,6 +227,38 @@ export default function DashboardShell({
         return nextApprovals;
       });
     }, APPROVAL_EXIT_DELAY_MS);
+  }
+
+  function handleSubmitPrompt(): void {
+    const nextPrompt = draftPrompt.trim();
+
+    if (!nextPrompt || isStreaming) {
+      return;
+    }
+
+    const userMessageId = `user-${Date.now()}`;
+    const assistantMessageId = `assistant-${Date.now()}`;
+
+    setChatMessages((currentMessages) => [
+      ...currentMessages,
+      {
+        id: userMessageId,
+        role: "user",
+        meta: "USER | CHANNEL: LIVE_QUERY | JUST_NOW",
+        content: nextPrompt,
+      },
+      {
+        id: assistantMessageId,
+        role: "assistant",
+        meta: "AI-CORE | MODEL: REVIEW_AGENT_V2 | STREAM: ACTIVE",
+        content: "",
+      },
+    ]);
+    setDraftPrompt("");
+    setIsStreaming(true);
+    setIsThinking(true);
+    setStreamingMessageId(assistantMessageId);
+    setActivePrompt(nextPrompt);
   }
 
   return (
@@ -170,53 +311,126 @@ export default function DashboardShell({
             </div>
 
             <div className="grid flex-1 gap-3 p-3 xl:grid-rows-[1fr_auto]">
-              <div className="space-y-3 overflow-hidden rounded-sm border border-[var(--panel-border)] bg-[var(--surface-bg-elevated)] p-3">
-                <div className="border-l-2 border-[var(--line-muted)] pl-3">
-                  <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-[var(--text-muted)]">
-                    <span>USER</span>
-                    <span className="text-[var(--line-muted)]">|</span>
-                    <span>CHANNEL: OPS_DESK</span>
-                    <span className="text-[var(--line-muted)]">|</span>
-                    <span>09:31:12 AST</span>
-                  </div>
-                  <p className="max-w-3xl text-sm leading-6 text-[var(--text-secondary)]">
-                    Summarize the active exception queue and isolate any actions
-                    still blocked on human authorization before market close.
-                  </p>
-                </div>
+              <div className="overflow-hidden rounded-sm border border-[var(--panel-border)] bg-[var(--surface-bg-elevated)]">
+                <div className="flex h-full max-h-[34rem] flex-col overflow-y-auto p-3">
+                  <div className="space-y-3">
+                    {chatMessages.map((message) => {
+                      const isAssistant = message.role === "assistant";
+                      const isActiveStream =
+                        isAssistant &&
+                        isStreaming &&
+                        message.id === streamingMessageId;
 
-                <div className="border-l-2 border-[var(--accent-positive-soft)] pl-3">
-                  <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-[var(--text-muted)]">
-                    <span className="text-[var(--accent-positive)]">AI-CORE</span>
-                    <span className="text-[var(--line-muted)]">|</span>
-                    <span>MODEL: REVIEW_AGENT_V2</span>
-                    <span className="text-[var(--line-muted)]">|</span>
-                    <span>STREAM: STANDBY</span>
+                      return (
+                        <div
+                          key={message.id}
+                          className={`border-l-2 pl-3 ${
+                            isAssistant
+                              ? "border-[var(--accent-positive-soft)]"
+                              : "border-[var(--line-muted)]"
+                          }`}
+                        >
+                          <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-[var(--text-muted)]">
+                            {message.meta
+                              .split(" | ")
+                              .map((part, index, parts) => (
+                                <span
+                                  key={`${message.id}-${part}`}
+                                  className={
+                                    isAssistant && index === 0
+                                      ? "text-[var(--accent-positive)]"
+                                      : undefined
+                                  }
+                                >
+                                  {part}
+                                  {index < parts.length - 1 ? (
+                                    <span className="px-3 text-[var(--line-muted)]">
+                                      |
+                                    </span>
+                                  ) : null}
+                                </span>
+                              ))}
+                          </div>
+
+                          {isActiveStream && isThinking ? (
+                            <div
+                              aria-live="polite"
+                              aria-label="Assistant is thinking"
+                              className="flex items-center gap-1.5 py-1 text-[var(--text-muted)]"
+                            >
+                              <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--accent-positive)] [animation-delay:-0.2s]" />
+                              <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--accent-positive)] [animation-delay:-0.1s]" />
+                              <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--accent-positive)]" />
+                            </div>
+                          ) : (
+                            <p className="max-w-4xl whitespace-pre-wrap text-sm leading-6 text-[var(--text-secondary)]">
+                              {message.content}
+                              {isActiveStream ? (
+                                <motion.span
+                                  aria-hidden="true"
+                                  animate={{ opacity: [0.2, 1, 0.2] }}
+                                  transition={{
+                                    duration: 0.9,
+                                    ease: "easeInOut",
+                                    repeat: Number.POSITIVE_INFINITY,
+                                  }}
+                                  className="ml-0.5 inline-block text-[var(--accent-positive)]"
+                                >
+                                  ▍
+                                </motion.span>
+                              ) : null}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+                    <div ref={bottomRef} />
                   </div>
-                  <p className="max-w-4xl text-sm leading-6 text-[var(--text-secondary)]">
-                    Three high-value operations remain gated. Human review is
-                    required for wire authorization, portfolio rebalance
-                    execution, and quarterly compliance reporting. Approval
-                    queue is mirrored in the right panel with transaction-level
-                    metadata.
-                  </p>
                 </div>
               </div>
 
-              <div className="rounded-sm border border-[var(--panel-border)] bg-[var(--surface-bg-elevated)]">
+              <form
+                className="rounded-sm border border-[var(--panel-border)] bg-[var(--surface-bg-elevated)]"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  handleSubmitPrompt();
+                }}
+              >
                 <div className="flex items-center justify-between gap-3 border-b border-[var(--panel-border)] px-3 py-2">
                   <p className="font-mono text-xs text-[var(--text-muted)]">
-                    INPUT_BUFFER // COMMAND_LINE DISABLED
+                    INPUT_BUFFER // COMMAND_LINE ACTIVE
                   </p>
                   <p className="font-mono text-xs text-[var(--line-muted)]">
-                    STEP_1_PLACEHOLDER
+                    {isStreaming ? "STREAM_LOCK ENGAGED" : "READY_FOR_QUERY"}
                   </p>
                 </div>
-                <div className="px-3 py-4 text-sm text-[var(--text-muted)]">
-                  Terminal composer, streaming response behavior, and send
-                  controls will be wired in the next step.
+                <div className="flex flex-col gap-3 px-3 py-3 sm:flex-row sm:items-end">
+                  <label className="flex-1">
+                    <span className="sr-only">Message the AI assistant</span>
+                    <input
+                      type="text"
+                      value={draftPrompt}
+                      disabled={isStreaming}
+                      onChange={(event) => setDraftPrompt(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          handleSubmitPrompt();
+                        }
+                      }}
+                      placeholder="Ask about Q2 performance, approvals, or model output..."
+                      className="w-full rounded-sm border border-[var(--panel-border)] bg-[var(--surface-bg)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--panel-border-strong)] focus:ring-1 focus:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    disabled={isStreaming || draftPrompt.trim().length === 0}
+                    className="rounded-sm border border-emerald-500/35 bg-emerald-500/10 px-4 py-2.5 font-mono text-xs tracking-[0.16em] text-emerald-400 transition-colors hover:bg-emerald-500/16 focus:ring-2 focus:ring-emerald-500 focus:outline-none disabled:cursor-not-allowed disabled:border-[var(--panel-border)] disabled:bg-[var(--surface-bg)] disabled:text-[var(--text-muted)] disabled:hover:bg-[var(--surface-bg)]"
+                  >
+                    SEND
+                  </button>
                 </div>
-              </div>
+              </form>
             </div>
           </section>
 
