@@ -10,19 +10,87 @@ import {
 } from "react";
 
 import type { ApprovalItem } from "@/src/data";
-import { simulateStream } from "@/src/utils/simulateStream";
 
 type ThemeMode = "dark" | "light";
 type ApprovalDecision = "approve" | "reject";
 type ChatRole = "assistant" | "user";
+type StreamProviderKind = "google" | "openai";
 const THEME_EVENT = "dashboard-theme-change";
 const APPROVAL_EXIT_DELAY_MS = 140;
+const GOOGLE_API_BASE =
+  process.env.NEXT_PUBLIC_GOOGLE_API_BASE ??
+  "https://generativelanguage.googleapis.com/v1beta";
+// This is intentionally public for the client-only demo. In production, route these calls through a server/API layer instead.
+const GOOGLE_MODEL = process.env.NEXT_PUBLIC_GOOGLE_MODEL ?? "gemini-2.0-flash";
+const OPENROUTER_API_BASE =
+  process.env.NEXT_PUBLIC_OPENROUTER_API_BASE ??
+  "https://openrouter.ai/api/v1";
+const OPENROUTER_MODEL =
+  process.env.NEXT_PUBLIC_OPENROUTER_MODEL ?? "google/gemma-3-4b-it:free";
+const FALLBACK_AI_PROVIDER = process.env.NEXT_PUBLIC_FALLBACK_AI_PROVIDER
+  ?.trim()
+  .toLowerCase();
+
+interface StreamProviderConfig {
+  kind: StreamProviderKind;
+  label: string;
+  model: string;
+  endpoint: string;
+  apiKey: string;
+  keyEnvName: string;
+}
 
 interface ChatMessage {
   id: string;
   role: ChatRole;
   content: string;
   meta: string;
+}
+
+interface ChatRequestMessage {
+  role: ChatRole;
+  content: string;
+}
+
+interface OpenAiStreamChunk {
+  choices?: Array<{
+    delta?: {
+      content?: string;
+    };
+  }>;
+  error?: {
+    code?: number | string;
+    message?: string;
+  };
+}
+
+interface GoogleStreamChunk {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        text?: string;
+      }>;
+    };
+    finishReason?: string;
+  }>;
+  promptFeedback?: {
+    blockReason?: string;
+  };
+  error?: {
+    code?: number | string;
+    message?: string;
+  };
+}
+
+class StreamHttpError extends Error {
+  constructor(
+    readonly providerLabel: string,
+    readonly status: number,
+    readonly responseBody: string,
+  ) {
+    super(`${providerLabel} request failed with status ${status}`);
+    this.name = "StreamHttpError";
+  }
 }
 
 interface DashboardShellProps {
@@ -93,6 +161,168 @@ function subscribeToTheme(onStoreChange: () => void): () => void {
   };
 }
 
+function getPrimaryProvider(): StreamProviderConfig {
+  const googleApiKey = process.env.NEXT_PUBLIC_GOOGLE_API_KEY ?? "";
+
+  if (googleApiKey) {
+    return {
+      kind: "google",
+      label: "Google Gemini",
+      model: GOOGLE_MODEL,
+      endpoint: `${GOOGLE_API_BASE}/models/${GOOGLE_MODEL}:streamGenerateContent?alt=sse&key=${encodeURIComponent(googleApiKey)}`,
+      apiKey: googleApiKey,
+      keyEnvName: "NEXT_PUBLIC_GOOGLE_API_KEY",
+    };
+  }
+
+  const openRouterApiKey = process.env.NEXT_PUBLIC_OPENROUTER_API_KEY ?? "";
+
+  if (openRouterApiKey) {
+    return {
+      kind: "openai",
+      label: "OpenRouter",
+      model: OPENROUTER_MODEL,
+      endpoint: `${OPENROUTER_API_BASE}/chat/completions`,
+      apiKey: openRouterApiKey,
+      keyEnvName: "NEXT_PUBLIC_OPENROUTER_API_KEY",
+    };
+  }
+
+  return {
+    kind: "google",
+    label: "Google Gemini",
+    model: GOOGLE_MODEL,
+    endpoint: `${GOOGLE_API_BASE}/models/${GOOGLE_MODEL}:streamGenerateContent?alt=sse&key=${encodeURIComponent(googleApiKey)}`,
+    apiKey: googleApiKey,
+    keyEnvName: "NEXT_PUBLIC_GOOGLE_API_KEY",
+  };
+}
+
+function getFallbackProvider(): StreamProviderConfig | null {
+  if (!FALLBACK_AI_PROVIDER) {
+    return null;
+  }
+
+  if (FALLBACK_AI_PROVIDER === "google") {
+    const fallbackModel =
+      process.env.NEXT_PUBLIC_FALLBACK_API_MODEL ?? "gemini-2.0-flash";
+    const fallbackBase =
+      process.env.NEXT_PUBLIC_FALLBACK_API_URL || GOOGLE_API_BASE;
+
+    return {
+      kind: "google",
+      label: "Fallback Google Gemini",
+      model: fallbackModel,
+      endpoint: `${fallbackBase}/models/${fallbackModel}:streamGenerateContent?alt=sse&key=${encodeURIComponent(process.env.NEXT_PUBLIC_FALLBACK_API_KEY ?? "")}`,
+      apiKey: process.env.NEXT_PUBLIC_FALLBACK_API_KEY ?? "",
+      keyEnvName: "NEXT_PUBLIC_FALLBACK_API_KEY",
+    };
+  }
+
+  if (FALLBACK_AI_PROVIDER === "openai") {
+    return {
+      kind: "openai",
+      label: "Fallback AI API",
+      model: process.env.NEXT_PUBLIC_FALLBACK_API_MODEL ?? "",
+      endpoint: process.env.NEXT_PUBLIC_FALLBACK_API_URL ?? "",
+      apiKey: process.env.NEXT_PUBLIC_FALLBACK_API_KEY ?? "",
+      keyEnvName: "NEXT_PUBLIC_FALLBACK_API_KEY",
+    };
+  }
+
+  return null;
+}
+
+function getProviderErrorMessage(
+  provider: StreamProviderConfig,
+  error: unknown,
+): string {
+  if (!provider.apiKey) {
+    return `${provider.label} API key missing. Add ${provider.keyEnvName} to .env.local and restart the dev server.`;
+  }
+
+  if (error instanceof StreamHttpError) {
+    if (error.status === 400) {
+      return `${provider.label} could not process this request. Please review the prompt or model configuration and try again.`;
+    }
+
+    if (error.status === 401) {
+      return `${provider.label} rejected the API key. Please verify ${provider.keyEnvName} and try again.`;
+    }
+
+    if (error.status === 403) {
+      return `${provider.label} denied access to this request. Please check your account permissions or model availability.`;
+    }
+
+    if (error.status === 404) {
+      return `${provider.label} could not find the requested model or endpoint. Please verify the configured model name.`;
+    }
+
+    if (error.status === 408) {
+      return `The request to ${provider.label} timed out before streaming began. Please try again.`;
+    }
+
+    if (error.status === 429) {
+      return `${provider.label} rate limit reached. Please wait a moment and retry.`;
+    }
+
+    if (error.status >= 500) {
+      return `${provider.label} is temporarily unavailable right now. Please retry in a moment.`;
+    }
+
+    if (error.responseBody) {
+      try {
+        const parsed = JSON.parse(error.responseBody) as {
+          error?: { message?: string };
+        };
+
+        if (parsed.error?.message) {
+          return `${provider.label} error: ${parsed.error.message}`;
+        }
+      } catch {
+        // Ignore response-body parsing failures and fall back to generic messaging below.
+      }
+    }
+  }
+
+  if (error instanceof Error && error.message === "EMPTY_RESPONSE_BODY") {
+    return `${provider.label} returned an empty stream response. Please retry the query.`;
+  }
+
+  if (error instanceof Error && error.message.startsWith("PROMPT_BLOCKED:")) {
+    const blockReason = error.message.slice("PROMPT_BLOCKED:".length) || "OTHER";
+    return `${provider.label} blocked this prompt (${blockReason}). Please rephrase and try again.`;
+  }
+
+  if (error instanceof TypeError) {
+    return `Network error while contacting ${provider.label}. Please check your connection and try again.`;
+  }
+
+  if (error instanceof Error && error.message) {
+    return `${provider.label} error: ${error.message}`;
+  }
+
+  return "Streaming interrupted while processing the request. Please retry the query.";
+}
+
+function buildGoogleContents(messages: ChatRequestMessage[]): Array<{
+  role: "user" | "model";
+  parts: Array<{ text: string }>;
+}> {
+  return messages.map((message) => ({
+    role: message.role === "assistant" ? "model" : "user",
+    parts: [{ text: message.content }],
+  }));
+}
+
+function extractGoogleText(chunk: GoogleStreamChunk): string {
+  return (
+    chunk.candidates?.[0]?.content?.parts
+      ?.map((part) => part.text ?? "")
+      .join("") ?? ""
+  );
+}
+
 export default function DashboardShell({
   approvals,
 }: DashboardShellProps): ReactElement {
@@ -112,12 +342,16 @@ export default function DashboardShell({
     useState<ChatMessage[]>(INITIAL_CHAT_MESSAGES);
   const [draftPrompt, setDraftPrompt] = useState("");
   const [activePrompt, setActivePrompt] = useState<string | null>(null);
+  const [pendingRequestMessages, setPendingRequestMessages] = useState<
+    ChatRequestMessage[] | null
+  >(null);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(
     null,
   );
   const [isStreaming, setIsStreaming] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const streamAbortControllerRef = useRef<AbortController | null>(null);
   const pendingCount = approvalItems.length;
 
   useEffect(() => {
@@ -130,63 +364,298 @@ export default function DashboardShell({
   }, [chatMessages, isThinking]);
 
   useEffect(() => {
-    if (!activePrompt || !streamingMessageId) {
+    return () => {
+      streamAbortControllerRef.current?.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!activePrompt || !streamingMessageId || !pendingRequestMessages) {
       return;
     }
 
+    const primaryProvider = getPrimaryProvider();
+    const fallbackProvider = getFallbackProvider();
     const controller = new AbortController();
-    const promptToStream = activePrompt;
+    streamAbortControllerRef.current = controller;
     const targetMessageId = streamingMessageId;
 
     async function streamResponse(): Promise<void> {
-      try {
-        let hasReceivedFirstToken = false;
+      let hasReceivedFirstToken = false;
 
-        for await (const chunk of simulateStream(promptToStream)) {
-          if (controller.signal.aborted) {
-            return;
-          }
-
-          if (!hasReceivedFirstToken) {
-            hasReceivedFirstToken = true;
-            setIsThinking(false);
-          }
-
-          setChatMessages((currentMessages) =>
-            currentMessages.map((message) =>
-              message.id === targetMessageId
-                ? { ...message, content: message.content + chunk }
-                : message,
-            ),
-          );
-        }
-
-        if (!controller.signal.aborted) {
-          setIsThinking(false);
-          setIsStreaming(false);
-          setStreamingMessageId(null);
-          setActivePrompt(null);
-        }
-      } catch {
-        if (controller.signal.aborted) {
-          return;
-        }
-
-          setChatMessages((currentMessages) =>
-          currentMessages.map((message) =>
-            message.id === targetMessageId
-              ? {
-                  ...message,
-                  content:
-                    "Streaming interrupted while processing the request. Please retry the query.",
-                }
-              : message,
-          ),
-        );
+      const finalizeStream = (): void => {
         setIsThinking(false);
         setIsStreaming(false);
         setStreamingMessageId(null);
         setActivePrompt(null);
+        setPendingRequestMessages(null);
+      };
+
+      const appendToken = (token: string): void => {
+        if (!hasReceivedFirstToken) {
+          hasReceivedFirstToken = true;
+          setIsThinking(false);
+        }
+
+        setChatMessages((currentMessages) =>
+          currentMessages.map((message) =>
+            message.id === targetMessageId
+              ? { ...message, content: message.content + token }
+              : message,
+          ),
+        );
+      };
+
+      const setAssistantMeta = (provider: StreamProviderConfig): void => {
+        setChatMessages((currentMessages) =>
+          currentMessages.map((message) =>
+            message.id === targetMessageId
+              ? {
+                  ...message,
+                  meta: `AI-CORE | MODEL: ${provider.model} | STREAM: ACTIVE`,
+                }
+              : message,
+          ),
+        );
+      };
+
+      const streamFromProvider = async (
+        provider: StreamProviderConfig,
+      ): Promise<void> => {
+        if (!provider.apiKey) {
+          throw new Error(`MISSING_KEY:${provider.keyEnvName}`);
+        }
+
+        if (provider.kind === "google") {
+          const response = await fetch(provider.endpoint, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              contents: buildGoogleContents(pendingRequestMessages),
+            }),
+            signal: controller.signal,
+          });
+
+          if (!response.ok) {
+            throw new StreamHttpError(
+              provider.label,
+              response.status,
+              await response.text(),
+            );
+          }
+
+          if (!response.body) {
+            throw new Error("EMPTY_RESPONSE_BODY");
+          }
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+
+          while (true) {
+            const { done, value } = await reader.read();
+
+            if (done) {
+              break;
+            }
+
+            if (controller.signal.aborted) {
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() ?? "";
+
+            for (const rawLine of lines) {
+              const line = rawLine.trim();
+
+              if (!line || !line.startsWith("data:")) {
+                continue;
+              }
+
+              const data = line.slice(5).trim();
+
+              let parsed: GoogleStreamChunk | undefined;
+
+              try {
+                parsed = JSON.parse(data) as GoogleStreamChunk;
+              } catch {
+                continue;
+              }
+
+              if (parsed.error?.message) {
+                throw new Error(parsed.error.message);
+              }
+
+              if (parsed.promptFeedback?.blockReason) {
+                throw new Error(
+                  `PROMPT_BLOCKED:${parsed.promptFeedback.blockReason}`,
+                );
+              }
+
+              const token = extractGoogleText(parsed);
+
+              if (!token) {
+                continue;
+              }
+
+              appendToken(token);
+            }
+          }
+
+          return;
+        }
+
+        const response = await fetch(provider.endpoint, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${provider.apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: provider.model,
+            stream: true,
+            messages: pendingRequestMessages,
+          }),
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          throw new StreamHttpError(
+            provider.label,
+            response.status,
+            await response.text(),
+          );
+        }
+
+        if (!response.body) {
+          throw new Error("EMPTY_RESPONSE_BODY");
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+
+          if (done) {
+            break;
+          }
+
+          if (controller.signal.aborted) {
+            return;
+          }
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+
+          for (const rawLine of lines) {
+            const line = rawLine.trim();
+
+            if (!line || !line.startsWith("data:")) {
+              continue;
+            }
+
+            const data = line.slice(5).trim();
+
+            if (data === "[DONE]") {
+              return;
+            }
+
+            let parsed: OpenAiStreamChunk | undefined;
+
+            try {
+              parsed = JSON.parse(data) as OpenAiStreamChunk;
+            } catch {
+              continue;
+            }
+
+            if (parsed.error?.message) {
+              throw new Error(parsed.error.message);
+            }
+
+            const token = parsed.choices?.[0]?.delta?.content;
+
+            if (!token) {
+              continue;
+            }
+
+            appendToken(token);
+          }
+        }
+      };
+
+      try {
+        setAssistantMeta(primaryProvider);
+        await streamFromProvider(primaryProvider);
+
+        if (!controller.signal.aborted) {
+          finalizeStream();
+        }
+      } catch (primaryError) {
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        const shouldFallback =
+          !hasReceivedFirstToken &&
+          fallbackProvider &&
+          fallbackProvider.endpoint &&
+          fallbackProvider.model;
+
+        if (shouldFallback) {
+          try {
+            setAssistantMeta(fallbackProvider);
+            await streamFromProvider(fallbackProvider);
+
+            if (!controller.signal.aborted) {
+              finalizeStream();
+            }
+
+            return;
+          } catch (fallbackError) {
+            if (controller.signal.aborted) {
+              return;
+            }
+
+            setChatMessages((currentMessages) =>
+              currentMessages.map((message) =>
+                message.id === targetMessageId
+                  ? {
+                      ...message,
+                      content: `${getProviderErrorMessage(primaryProvider, primaryError)}\n\nFallback failed: ${getProviderErrorMessage(fallbackProvider, fallbackError)}`,
+                    }
+                  : message,
+              ),
+            );
+
+            finalizeStream();
+            return;
+          }
+        }
+
+        if (!controller.signal.aborted) {
+          setChatMessages((currentMessages) =>
+            currentMessages.map((message) =>
+              message.id === targetMessageId
+                ? {
+                    ...message,
+                    content: getProviderErrorMessage(primaryProvider, primaryError),
+                  }
+                : message,
+            ),
+          );
+          finalizeStream();
+        }
+      } finally {
+        if (streamAbortControllerRef.current === controller) {
+          streamAbortControllerRef.current = null;
+        }
       }
     }
 
@@ -195,7 +664,7 @@ export default function DashboardShell({
     return () => {
       controller.abort();
     };
-  }, [activePrompt, streamingMessageId]);
+  }, [activePrompt, pendingRequestMessages, streamingMessageId]);
 
   function handleThemeToggle(): void {
     const nextTheme: ThemeMode = themeMode === "dark" ? "light" : "dark";
@@ -229,7 +698,7 @@ export default function DashboardShell({
     }, APPROVAL_EXIT_DELAY_MS);
   }
 
-  function handleSubmitPrompt(): void {
+  function handleSubmit(): void {
     const nextPrompt = draftPrompt.trim();
 
     if (!nextPrompt || isStreaming) {
@@ -239,21 +708,34 @@ export default function DashboardShell({
     const userMessageId = `user-${Date.now()}`;
     const assistantMessageId = `assistant-${Date.now()}`;
 
-    setChatMessages((currentMessages) => [
-      ...currentMessages,
-      {
-        id: userMessageId,
-        role: "user",
-        meta: "USER | CHANNEL: LIVE_QUERY | JUST_NOW",
-        content: nextPrompt,
-      },
-      {
-        id: assistantMessageId,
-        role: "assistant",
-        meta: "AI-CORE | MODEL: REVIEW_AGENT_V2 | STREAM: ACTIVE",
-        content: "",
-      },
-    ]);
+    setChatMessages((currentMessages) => {
+      const nextMessages: ChatMessage[] = [
+        ...currentMessages,
+        {
+          id: userMessageId,
+          role: "user",
+          meta: "USER | CHANNEL: LIVE_QUERY | JUST_NOW",
+          content: nextPrompt,
+        },
+        {
+          id: assistantMessageId,
+          role: "assistant",
+          meta: `AI-CORE | MODEL: ${GOOGLE_MODEL} | STREAM: ACTIVE`,
+          content: "",
+        },
+      ];
+
+      setPendingRequestMessages(
+        nextMessages
+          .filter((message) => message.id !== assistantMessageId)
+          .map((message) => ({
+            role: message.role,
+            content: message.content,
+          })),
+      );
+
+      return nextMessages;
+    });
     setDraftPrompt("");
     setIsStreaming(true);
     setIsThinking(true);
@@ -356,8 +838,11 @@ export default function DashboardShell({
                             <div
                               aria-live="polite"
                               aria-label="Assistant is thinking"
-                              className="flex items-center gap-1.5 py-1 text-[var(--text-muted)]"
+                              className="flex items-center gap-2 py-1 text-[var(--text-muted)]"
                             >
+                              <span className="font-mono text-xs tracking-[0.14em] text-[var(--accent-positive)]">
+                                SYSTEM: AWAITING_STREAM...
+                              </span>
                               <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--accent-positive)] [animation-delay:-0.2s]" />
                               <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--accent-positive)] [animation-delay:-0.1s]" />
                               <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--accent-positive)]" />
@@ -393,7 +878,7 @@ export default function DashboardShell({
                 className="rounded-sm border border-[var(--panel-border)] bg-[var(--surface-bg-elevated)]"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  handleSubmitPrompt();
+                  handleSubmit();
                 }}
               >
                 <div className="flex items-center justify-between gap-3 border-b border-[var(--panel-border)] px-3 py-2">
@@ -415,7 +900,7 @@ export default function DashboardShell({
                       onKeyDown={(event) => {
                         if (event.key === "Enter") {
                           event.preventDefault();
-                          handleSubmitPrompt();
+                          handleSubmit();
                         }
                       }}
                       placeholder="Ask about Q2 performance, approvals, or model output..."
